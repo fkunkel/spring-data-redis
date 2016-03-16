@@ -21,22 +21,29 @@ import static org.hamcrest.core.IsInstanceOf.*;
 import static org.hamcrest.core.IsNot.*;
 import static org.junit.Assert.*;
 
+import java.util.Arrays;
 import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
 import org.junit.After;
+import org.junit.AfterClass;
 import org.junit.Before;
 import org.junit.Test;
-import org.springframework.beans.factory.DisposableBean;
+import org.junit.runner.RunWith;
+import org.junit.runners.Parameterized;
+import org.junit.runners.Parameterized.Parameters;
+import org.springframework.beans.factory.InitializingBean;
 import org.springframework.dao.DataAccessException;
 import org.springframework.data.annotation.Id;
 import org.springframework.data.annotation.Reference;
 import org.springframework.data.keyvalue.annotation.KeySpace;
+import org.springframework.data.redis.ConnectionFactoryTracker;
 import org.springframework.data.redis.connection.RedisConnection;
 import org.springframework.data.redis.connection.RedisConnectionFactory;
 import org.springframework.data.redis.connection.jedis.JedisConnectionFactory;
+import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
 import org.springframework.data.redis.core.convert.Bucket;
 import org.springframework.data.redis.core.convert.KeyspaceConfiguration;
 import org.springframework.data.redis.core.convert.MappingConfiguration;
@@ -48,24 +55,40 @@ import org.springframework.data.redis.core.mapping.RedisMappingContext;
  * @author Christoph Strobl
  * @author Mark Paluch
  */
+@RunWith(Parameterized.class)
 public class RedisKeyValueAdapterTests {
 
 	RedisKeyValueAdapter adapter;
 	StringRedisTemplate template;
 	RedisConnectionFactory connectionFactory;
 
+	public RedisKeyValueAdapterTests(RedisConnectionFactory connectionFactory) throws Exception {
+
+		if (connectionFactory instanceof InitializingBean) {
+			((InitializingBean) connectionFactory).afterPropertiesSet();
+		}
+		this.connectionFactory = connectionFactory;
+		ConnectionFactoryTracker.add(connectionFactory);
+	}
+
+	@Parameters
+	public static List<RedisConnectionFactory> params() {
+		return Arrays.<RedisConnectionFactory> asList(new JedisConnectionFactory(), new LettuceConnectionFactory());
+	}
+
+	@AfterClass
+	public static void cleanUp() {
+		ConnectionFactoryTracker.cleanUp();
+	}
+
 	@Before
 	public void setUp() {
-
-		JedisConnectionFactory jedisConnectionFactory = new JedisConnectionFactory();
-		jedisConnectionFactory.afterPropertiesSet();
-		connectionFactory = jedisConnectionFactory;
 
 		template = new StringRedisTemplate(connectionFactory);
 		template.afterPropertiesSet();
 
-		RedisMappingContext mappingContext = new RedisMappingContext(new MappingConfiguration(new IndexConfiguration(),
-				new KeyspaceConfiguration()));
+		RedisMappingContext mappingContext = new RedisMappingContext(
+				new MappingConfiguration(new IndexConfiguration(), new KeyspaceConfiguration()));
 		mappingContext.afterPropertiesSet();
 
 		adapter = new RedisKeyValueAdapter(template, mappingContext);
@@ -85,14 +108,6 @@ public class RedisKeyValueAdapterTests {
 
 		try {
 			adapter.destroy();
-		} catch (Exception e) {
-			// ignore
-		}
-
-		try {
-			if (connectionFactory instanceof DisposableBean) {
-				((DisposableBean) connectionFactory).destroy();
-			}
 		} catch (Exception e) {
 			// ignore
 		}
@@ -270,6 +285,77 @@ public class RedisKeyValueAdapterTests {
 		assertThat(template.hasKey("persons:firstname:rand"), is(false));
 		assertThat(template.hasKey("persons:1:idx"), is(false));
 		assertThat(template.opsForSet().members("persons"), not(hasItem("1")));
+	}
+
+	/**
+	 * @see DATAREDIS-471
+	 */
+	@Test
+	public void updateShouldAlterIndexDataCorrectly() {
+
+		Person rand = new Person();
+		rand.firstname = "rand";
+
+		adapter.put("1", rand, "persons");
+
+		assertThat(template.hasKey("persons:firstname:rand"), is(true));
+
+		PartialUpdate<Person> update = new PartialUpdate<Person>("1", Person.class) //
+				.set("firstname", "mat");
+
+		adapter.update(update);
+
+		assertThat(template.hasKey("persons:firstname:rand"), is(false));
+		assertThat(template.hasKey("persons:firstname:mat"), is(true));
+	}
+
+	/**
+	 * @see DATAREDIS-471
+	 */
+	@Test
+	public void updateShouldAlterIndexDataOnNestedObjectCorrectly() {
+
+		Person rand = new Person();
+		rand.address = new Address();
+		rand.address.country = "andor";
+
+		adapter.put("1", rand, "persons");
+
+		assertThat(template.hasKey("persons:address.country:andor"), is(true));
+
+		PartialUpdate<Person> update = new PartialUpdate<Person>("1", Person.class);
+		Address addressUpdate = new Address();
+		addressUpdate.country = "tear";
+
+		update = update.set("address", addressUpdate);
+
+		adapter.update(update);
+
+		assertThat(template.hasKey("persons:address.country:andor"), is(false));
+		assertThat(template.hasKey("persons:address.country:tear"), is(true));
+	}
+
+	/**
+	 * @see DATAREDIS-471
+	 */
+	@Test
+	public void updateShouldAlterIndexDataOnNestedObjectPathCorrectly() {
+
+		Person rand = new Person();
+		rand.address = new Address();
+		rand.address.country = "andor";
+
+		adapter.put("1", rand, "persons");
+
+		assertThat(template.hasKey("persons:address.country:andor"), is(true));
+
+		PartialUpdate<Person> update = new PartialUpdate<Person>("1", Person.class) //
+				.set("address.country", "tear");
+
+		adapter.update(update);
+
+		assertThat(template.hasKey("persons:address.country:andor"), is(false));
+		assertThat(template.hasKey("persons:address.country:tear"), is(true));
 	}
 
 	@KeySpace("persons")

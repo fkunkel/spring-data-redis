@@ -17,6 +17,7 @@ package org.springframework.data.redis.core;
 
 import java.io.Serializable;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
@@ -25,7 +26,6 @@ import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.BeansException;
-import org.springframework.beans.factory.DisposableBean;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.ApplicationContextAware;
 import org.springframework.context.ApplicationListener;
@@ -38,7 +38,8 @@ import org.springframework.data.keyvalue.core.mapping.KeyValuePersistentProperty
 import org.springframework.data.redis.connection.Message;
 import org.springframework.data.redis.connection.MessageListener;
 import org.springframework.data.redis.connection.RedisConnection;
-import org.springframework.data.redis.connection.RedisConnectionFactory;
+import org.springframework.data.redis.core.PartialUpdate.PropertyUpdate;
+import org.springframework.data.redis.core.PartialUpdate.UpdateCommand;
 import org.springframework.data.redis.core.convert.CustomConversions;
 import org.springframework.data.redis.core.convert.KeyspaceConfiguration;
 import org.springframework.data.redis.core.convert.MappingRedisConverter;
@@ -47,6 +48,7 @@ import org.springframework.data.redis.core.convert.RedisConverter;
 import org.springframework.data.redis.core.convert.RedisData;
 import org.springframework.data.redis.core.convert.ReferenceResolverImpl;
 import org.springframework.data.redis.core.mapping.RedisMappingContext;
+import org.springframework.data.redis.core.mapping.RedisPersistentEntity;
 import org.springframework.data.redis.listener.KeyExpirationEventMessageListener;
 import org.springframework.data.redis.listener.RedisMessageListenerContainer;
 import org.springframework.data.redis.util.ByteUtils;
@@ -164,8 +166,7 @@ public class RedisKeyValueAdapter extends AbstractKeyValueAdapter
 	/**
 	 * Default constructor.
 	 */
-	protected RedisKeyValueAdapter() {
-	}
+	protected RedisKeyValueAdapter() {}
 
 	/*
 	 * (non-Javadoc)
@@ -391,6 +392,109 @@ public class RedisKeyValueAdapter extends AbstractKeyValueAdapter
 		});
 
 		return count != null ? count.longValue() : 0;
+	}
+
+	public void update(final PartialUpdate<?> update) {
+
+		final RedisPersistentEntity<?> entity = this.converter.getMappingContext().getPersistentEntity(update.getTarget());
+
+		final String keyspace = entity.getKeySpace();
+		final Object id = update.getId();
+
+		final byte[] redisKey = createKey(keyspace, converter.getConversionService().convert(id, String.class));
+
+		final RedisData rdo = new RedisData();
+		this.converter.write(update, rdo);
+
+		redisOps.execute(new RedisCallback<Void>() {
+
+			@Override
+			public Void doInRedis(RedisConnection connection) throws DataAccessException {
+
+				List<byte[]> pathsToRemove = new ArrayList<byte[]>(update.getPropertyUpdates().size());
+
+				for (PropertyUpdate pUpdate : update.getPropertyUpdates()) {
+
+					String propertyPath = pUpdate.getPropertyPath();
+
+					if (UpdateCommand.DEL.equals(pUpdate.getCmd())) {
+
+						byte[] existingValue = connection.hGet(redisKey, toBytes(propertyPath));
+						pathsToRemove.add(toBytes(propertyPath));
+
+						byte[] existingValueIndexKey = existingValue != null
+								? ByteUtils.concatAll(toBytes(keyspace), (":" + propertyPath).getBytes(), ":".getBytes(), existingValue)
+								: null;
+
+						if (existingValue != null) {
+
+							if (connection.exists(existingValueIndexKey)) {
+								connection.sRem(existingValueIndexKey, toBytes(id));
+							}
+						}
+					}
+
+					if (pUpdate.getValue() instanceof Collection || pUpdate.getValue() instanceof Map
+							|| (pUpdate.getValue() != null && pUpdate.getValue().getClass().isArray()) || (pUpdate.getValue() != null
+									&& !converter.getConversionService().canConvert(pUpdate.getValue().getClass(), byte[].class))) {
+
+						Set<byte[]> existingFields = connection.hKeys(redisKey);
+
+						for (byte[] hkey : existingFields) {
+
+							if (asString(hkey).startsWith(pUpdate.getPropertyPath() + ".")) {
+								pathsToRemove.add(hkey);
+
+								byte[] existingValue = connection.hGet(redisKey, toBytes(hkey));
+								byte[] existingValueIndexKey = existingValue != null ? ByteUtils.concatAll(toBytes(keyspace),
+										(":" + propertyPath).getBytes(), ":".getBytes(), existingValue) : null;
+
+								if (existingValue != null) {
+
+									if (connection.exists(existingValueIndexKey)) {
+										connection.sRem(existingValueIndexKey, toBytes(id));
+									}
+								}
+							}
+						}
+
+					}
+				}
+
+				if (!pathsToRemove.isEmpty()) {
+					connection.hDel(redisKey, pathsToRemove.toArray(new byte[pathsToRemove.size()][]));
+				}
+
+				if (!rdo.getBucket().isEmpty()) {
+					if (rdo.getBucket().size() > 1
+							|| (rdo.getBucket().size() == 1 && !rdo.getBucket().asMap().containsKey("_class"))) {
+						connection.hMSet(redisKey, rdo.getBucket().rawMap());
+					}
+				}
+
+				if (update.isRefreshTtl()) {
+
+					if (rdo.getTimeToLive() != null && rdo.getTimeToLive().longValue() > 0) {
+
+						connection.expire(redisKey, rdo.getTimeToLive().longValue());
+
+						// add phantom key so values can be restored
+						byte[] phantomKey = ByteUtils.concat(redisKey, toBytes(":phantom"));
+						connection.hMSet(phantomKey, rdo.getBucket().rawMap());
+						connection.expire(phantomKey, rdo.getTimeToLive().longValue() + 300);
+
+					} else {
+
+						connection.persist(redisKey);
+						connection.persist(ByteUtils.concat(redisKey, toBytes(":phantom")));
+					}
+				}
+
+				new IndexWriter(connection, converter).updateIndexes(toBytes(id), rdo.getIndexedData());
+				return null;
+			}
+
+		});
 	}
 
 	/**
