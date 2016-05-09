@@ -62,7 +62,7 @@ public class PathIndexResolver implements IndexResolver {
 	/**
 	 * Creates new {@link PathIndexResolver} with given {@link IndexConfiguration}.
 	 *
-	 * @param mapppingContext must not be {@literal null}.
+	 * @param mappingContext must not be {@literal null}.
 	 */
 	public PathIndexResolver(RedisMappingContext mappingContext) {
 
