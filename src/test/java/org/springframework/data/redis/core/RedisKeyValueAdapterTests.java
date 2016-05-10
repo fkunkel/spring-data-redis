@@ -22,6 +22,7 @@ import static org.hamcrest.core.IsNot.*;
 import static org.junit.Assert.*;
 
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -356,6 +357,120 @@ public class RedisKeyValueAdapterTests {
 
 		assertThat(template.hasKey("persons:address.country:andor"), is(false));
 		assertThat(template.hasKey("persons:address.country:tear"), is(true));
+	}
+
+	/**
+	 * @see DATAREDIS-471
+	 */
+	@Test
+	public void updateShouldRemoveComplexObjectCorrectly() {
+
+		Person rand = new Person();
+		rand.address = new Address();
+		rand.address.country = "andor";
+		rand.address.city = "emond's field";
+
+		adapter.put("1", rand, "persons");
+
+		PartialUpdate<Person> update = new PartialUpdate<Person>("1", Person.class) //
+				.del("address");
+
+		adapter.update(update);
+
+		assertThat(template.opsForHash().hasKey("persons:1", "address.country"), is(false));
+		assertThat(template.opsForHash().hasKey("persons:1", "address.city"), is(false));
+		assertThat(template.opsForSet().isMember("persons:address.country:andor", "1"), is(false));
+	}
+
+	/**
+	 * @see DATAREDIS-471
+	 */
+	@Test
+	public void updateShouldRemoveSimpleListValuesCorrectly() {
+
+		Person rand = new Person();
+		rand.nicknames = Arrays.asList("lews therin", "dragon reborn");
+
+		adapter.put("1", rand, "persons");
+
+		PartialUpdate<Person> update = new PartialUpdate<Person>("1", Person.class) //
+				.del("nicknames");
+
+		adapter.update(update);
+
+		assertThat(template.opsForHash().hasKey("persons:1", "nicknames.[0]"), is(false));
+		assertThat(template.opsForHash().hasKey("persons:1", "nicknames.[1]"), is(false));
+	}
+
+	/**
+	 * @see DATAREDIS-471
+	 */
+	@Test
+	public void updateShouldRemoveComplexListValuesCorrectly() {
+
+		Person mat = new Person();
+		mat.firstname = "mat";
+		mat.nicknames = Collections.singletonList("prince of ravens");
+
+		Person perrin = new Person();
+		perrin.firstname = "mat";
+		perrin.nicknames = Collections.singletonList("lord of the two rivers");
+
+		Person rand = new Person();
+		rand.coworkers = Arrays.asList(mat, perrin);
+
+		adapter.put("1", rand, "persons");
+
+		PartialUpdate<Person> update = new PartialUpdate<Person>("1", Person.class) //
+				.del("coworkers");
+
+		adapter.update(update);
+
+		assertThat(template.opsForHash().hasKey("persons:1", "coworkers.[0].firstname"), is(false));
+		assertThat(template.opsForHash().hasKey("persons:1", "coworkers.[0].nicknames.[0]"), is(false));
+		assertThat(template.opsForHash().hasKey("persons:1", "coworkers.[1].firstname"), is(false));
+		assertThat(template.opsForHash().hasKey("persons:1", "coworkers.[1].nicknames.[0]"), is(false));
+	}
+
+	/**
+	 * @see DATAREDIS-471
+	 */
+	@Test
+	public void updateShouldRemoveSimpleMapValuesCorrectly() {
+
+		Person rand = new Person();
+		rand.physicalAttributes = Collections.singletonMap("eye-color", "grey");
+
+		adapter.put("1", rand, "persons");
+
+		PartialUpdate<Person> update = new PartialUpdate<Person>("1", Person.class) //
+				.del("physicalAttributes");
+
+		adapter.update(update);
+
+		assertThat(template.opsForHash().hasKey("persons:1", "physicalAttributes.[eye-color]"), is(false));
+	}
+
+	/**
+	 * @see DATAREDIS-471
+	 */
+	@Test
+	public void updateShouldRemoveComplexMapValuesCorrectly() {
+
+		Person tam = new Person();
+		tam.firstname = "tam";
+
+		Person rand = new Person();
+		rand.relatives = Collections.singletonMap("stepfather", tam);
+
+		adapter.put("1", rand, "persons");
+
+		PartialUpdate<Person> update = new PartialUpdate<Person>("1", Person.class) //
+				.del("relatives");
+
+		adapter.update(update);
+
+		assertThat(template.opsForHash().hasKey("persons:1", "relatives.[stepfather].firstname"), is(false));
 	}
 
 	@KeySpace("persons")

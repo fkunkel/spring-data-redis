@@ -18,6 +18,7 @@ package org.springframework.data.redis.core;
 import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
@@ -411,58 +412,28 @@ public class RedisKeyValueAdapter extends AbstractKeyValueAdapter
 			@Override
 			public Void doInRedis(RedisConnection connection) throws DataAccessException {
 
-				List<byte[]> pathsToRemove = new ArrayList<byte[]>(update.getPropertyUpdates().size());
+				RedisUpdateObject redisUpdateObject = new RedisUpdateObject(redisKey, keyspace, id);
 
 				for (PropertyUpdate pUpdate : update.getPropertyUpdates()) {
 
 					String propertyPath = pUpdate.getPropertyPath();
 
-					if (UpdateCommand.DEL.equals(pUpdate.getCmd())) {
-
-						byte[] existingValue = connection.hGet(redisKey, toBytes(propertyPath));
-						pathsToRemove.add(toBytes(propertyPath));
-
-						byte[] existingValueIndexKey = existingValue != null
-								? ByteUtils.concatAll(toBytes(keyspace), (":" + propertyPath).getBytes(), ":".getBytes(), existingValue)
-								: null;
-
-						if (existingValue != null) {
-
-							if (connection.exists(existingValueIndexKey)) {
-								connection.sRem(existingValueIndexKey, toBytes(id));
-							}
-						}
-					}
-
-					if (pUpdate.getValue() instanceof Collection || pUpdate.getValue() instanceof Map
+					if (UpdateCommand.DEL.equals(pUpdate.getCmd()) || pUpdate.getValue() instanceof Collection
+							|| pUpdate.getValue() instanceof Map
 							|| (pUpdate.getValue() != null && pUpdate.getValue().getClass().isArray()) || (pUpdate.getValue() != null
 									&& !converter.getConversionService().canConvert(pUpdate.getValue().getClass(), byte[].class))) {
 
-						Set<byte[]> existingFields = connection.hKeys(redisKey);
-
-						for (byte[] hkey : existingFields) {
-
-							if (asString(hkey).startsWith(pUpdate.getPropertyPath() + ".")) {
-								pathsToRemove.add(hkey);
-
-								byte[] existingValue = connection.hGet(redisKey, toBytes(hkey));
-								byte[] existingValueIndexKey = existingValue != null ? ByteUtils.concatAll(toBytes(keyspace),
-										(":" + propertyPath).getBytes(), ":".getBytes(), existingValue) : null;
-
-								if (existingValue != null) {
-
-									if (connection.exists(existingValueIndexKey)) {
-										connection.sRem(existingValueIndexKey, toBytes(id));
-									}
-								}
-							}
-						}
-
+						redisUpdateObject = fetchDeletePathsFromHashAndUpdateIndex(redisUpdateObject, propertyPath, connection);
 					}
 				}
 
-				if (!pathsToRemove.isEmpty()) {
-					connection.hDel(redisKey, pathsToRemove.toArray(new byte[pathsToRemove.size()][]));
+				if (!redisUpdateObject.fieldsToRemove.isEmpty()) {
+					connection.hDel(redisKey,
+							redisUpdateObject.fieldsToRemove.toArray(new byte[redisUpdateObject.fieldsToRemove.size()][]));
+				}
+
+				for (byte[] index : redisUpdateObject.indexesToUpdate) {
+					connection.sRem(index, toBytes(redisUpdateObject.targetId));
 				}
 
 				if (!rdo.getBucket().isEmpty()) {
@@ -495,6 +466,48 @@ public class RedisKeyValueAdapter extends AbstractKeyValueAdapter
 			}
 
 		});
+	}
+
+	private RedisUpdateObject fetchDeletePathsFromHashAndUpdateIndex(RedisUpdateObject redisUpdateObject, String path,
+			RedisConnection connection) {
+
+		redisUpdateObject.addFieldToRemove(toBytes(path));
+		byte[] value = connection.hGet(redisUpdateObject.targetKey, toBytes(path));
+
+		if (value != null && value.length > 0) {
+
+			byte[] existingValueIndexKey = value != null
+					? ByteUtils.concatAll(toBytes(redisUpdateObject.keyspace), toBytes((":" + path)), toBytes(":"), value) : null;
+
+			if (connection.exists(existingValueIndexKey)) {
+				redisUpdateObject.addIndexToUpdate(existingValueIndexKey);
+			}
+			return redisUpdateObject;
+		}
+
+		Set<byte[]> existingFields = connection.hKeys(redisUpdateObject.targetKey);
+
+		for (byte[] field : existingFields) {
+
+			if (asString(field).startsWith(path + ".")) {
+
+				redisUpdateObject.addFieldToRemove(field);
+				value = connection.hGet(redisUpdateObject.targetKey, toBytes(field));
+
+				if (value != null) {
+
+					byte[] existingValueIndexKey = value != null
+							? ByteUtils.concatAll(toBytes(redisUpdateObject.keyspace), toBytes(":"), field, toBytes(":"), value)
+							: null;
+
+					if (connection.exists(existingValueIndexKey)) {
+						redisUpdateObject.addIndexToUpdate(existingValueIndexKey);
+					}
+				}
+			}
+		}
+
+		return redisUpdateObject;
 	}
 
 	/**
@@ -684,4 +697,33 @@ public class RedisKeyValueAdapter extends AbstractKeyValueAdapter
 		}
 	}
 
+	/**
+	 * Container holding update information like fields to remove from the Redis Hash.
+	 *
+	 * @author Christoph Strobl
+	 */
+	private static class RedisUpdateObject {
+
+		private final String keyspace;
+		private final Object targetId;
+		private final byte[] targetKey;
+
+		private Set<byte[]> fieldsToRemove = new LinkedHashSet<byte[]>();
+		private Set<byte[]> indexesToUpdate = new LinkedHashSet<byte[]>();
+
+		RedisUpdateObject(byte[] targetKey, String keyspace, Object targetId) {
+
+			this.targetKey = targetKey;
+			this.keyspace = keyspace;
+			this.targetId = targetId;
+		}
+
+		void addFieldToRemove(byte[] field) {
+			fieldsToRemove.add(field);
+		}
+
+		void addIndexToUpdate(byte[] indexName) {
+			indexesToUpdate.add(indexName);
+		}
+	}
 }
