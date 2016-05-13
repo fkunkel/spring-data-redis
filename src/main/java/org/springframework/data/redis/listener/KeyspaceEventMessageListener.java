@@ -74,18 +74,18 @@ public abstract class KeyspaceEventMessageListener implements MessageListener, I
 	 */
 	public void init() {
 
-		RedisConnection connection = listenerContainer.getConnectionFactory().getConnection();
-		List<String> config = connection.getConfig("notify-keyspace-events");
-
-		if (config.size() == 2) {
-
-			if (!StringUtils.hasText(config.get(1))) {
-
-				// TODO more fine grained reaction on event configuration
-				connection.setConfig("notify-keyspace-events", "KEA");
-			}
-		}
-		connection.close();
+//		RedisConnection connection = listenerContainer.getConnectionFactory().getConnection();
+//		List<String> config = connection.getConfig("notify-keyspace-events");
+//
+//		if (config.size() == 2) {
+//
+//			if (!StringUtils.hasText(config.get(1))) {
+//
+//				// TODO more fine grained reaction on event configuration
+//				connection.setConfig("notify-keyspace-events", "KEA");
+//			}
+//		}
+//		connection.close();
 
 		doRegister(listenerContainer);
 	}
