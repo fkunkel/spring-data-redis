@@ -37,12 +37,14 @@ import org.springframework.data.redis.core.mapping.RedisPersistentEntity;
 import org.springframework.data.util.ClassTypeInformation;
 import org.springframework.data.util.TypeInformation;
 import org.springframework.util.Assert;
+import org.springframework.util.CollectionUtils;
 
 /**
  * {@link IndexResolver} implementation considering properties annotated with {@link Indexed} or paths set up in
  * {@link IndexConfiguration}.
  *
  * @author Christoph Strobl
+ * @author Greg Turnquist
  * @since 1.7
  */
 public class PathIndexResolver implements IndexResolver {
@@ -116,11 +118,24 @@ public class PathIndexResolver implements IndexResolver {
 
 					} else if (persistentProperty.isCollectionLike()) {
 
-						for (Object listValue : (Iterable<?>) propertyValue) {
+						final Iterable<?> iterable;
 
-							TypeInformation<?> typeToUse = updateTypeHintForActualValue(typeHint, listValue);
-							indexes.addAll(
-									doResolveIndexesFor(keyspace, currentPath, typeToUse.getActualType(), persistentProperty, listValue));
+						if (Iterable.class.isAssignableFrom(propertyValue.getClass())) {
+							iterable = (Iterable) propertyValue;
+						} else if (propertyValue.getClass().isArray()) {
+							iterable = CollectionUtils.arrayToList(propertyValue);
+						} else {
+							throw new RuntimeException(
+									"Don't know how to handle " + propertyValue.getClass() + " type of collection");
+						}
+
+						for (Object listValue : iterable) {
+
+							if (listValue != null) {
+								TypeInformation<?> typeToUse = updateTypeHintForActualValue(typeHint, listValue);
+								indexes.addAll(doResolveIndexesFor(keyspace, currentPath, typeToUse.getActualType(), persistentProperty,
+										listValue));
+							}
 						}
 					}
 

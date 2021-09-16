@@ -43,9 +43,11 @@ import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
+import org.hamcrest.core.IsEqual;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -65,6 +67,8 @@ import org.springframework.data.redis.core.convert.ConversionTestEntities.Person
 import org.springframework.data.redis.core.convert.ConversionTestEntities.Species;
 import org.springframework.data.redis.core.convert.ConversionTestEntities.TaVeren;
 import org.springframework.data.redis.core.convert.ConversionTestEntities.TheWheelOfTime;
+import org.springframework.data.redis.core.convert.ConversionTestEntities.TypeWithObjectValueTypes;
+import org.springframework.data.redis.core.convert.ConversionTestEntities.WithArrays;
 import org.springframework.data.redis.core.convert.KeyspaceConfiguration.KeyspaceSettings;
 import org.springframework.data.redis.core.mapping.RedisMappingContext;
 import org.springframework.data.redis.serializer.Jackson2JsonRedisSerializer;
@@ -75,6 +79,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 
 /**
  * @author Christoph Strobl
+ * @author Greg Turnquist
  */
 @RunWith(MockitoJUnitRunner.class)
 public class MappingRedisConverterUnitTests {
@@ -146,7 +151,7 @@ public class MappingRedisConverterUnitTests {
 	 * @see DATAREDIS-425
 	 */
 	@Test
-	public void writeDoesNotAppendPropertiesWithEmtpyCollections() {
+	public void writeDoesNotAppendPropertiesWithEmptyCollections() {
 
 		rand.firstname = "rand";
 
@@ -1325,11 +1330,296 @@ public class MappingRedisConverterUnitTests {
 		assertThat(target.species.get(0).name, is("trolloc"));
 	}
 
+	/**
+	 * @see DATAREDIS-492
+	 */
+	@Test
+	public void writeHandlesArraysProperly() {
+
+		this.converter = new MappingRedisConverter(null, null, resolverMock);
+		this.converter.setCustomConversions(new CustomConversions(Collections.singletonList(new ListToByteConverter())));
+		this.converter.afterPropertiesSet();
+
+		Map<String, Object> innerMap = new LinkedHashMap<String, Object>();
+		innerMap.put("address", "tyrionl@netflix.com");
+		innerMap.put("when", new String[] { "pipeline.failed" });
+
+		Map<String, Object> map = new LinkedHashMap<String, Object>();
+		map.put("email", Collections.singletonList(innerMap));
+
+		RedisData target = write(map);
+	}
+
+	/**
+	 * @see DATAREDIS-492
+	 */
+	@Test
+	public void writeHandlesArraysOfSimpleTypeProperly() {
+
+		WithArrays source = new WithArrays();
+		source.arrayOfSimpleTypes = new String[] { "rand", "mat", "perrin" };
+
+		assertThat(write(source).getBucket(),
+				isBucket().containingUtf8String("arrayOfSimpleTypes.[0]", "rand")
+						.containingUtf8String("arrayOfSimpleTypes.[1]", "mat")
+						.containingUtf8String("arrayOfSimpleTypes.[2]", "perrin"));
+	}
+
+	/**
+	 * @see DATAREDIS-492
+	 */
+	@Test
+	public void readHandlesArraysOfSimpleTypeProperly() {
+
+		Map<String, String> source = new LinkedHashMap<String, String>();
+		source.put("arrayOfSimpleTypes.[0]", "rand");
+		source.put("arrayOfSimpleTypes.[1]", "mat");
+		source.put("arrayOfSimpleTypes.[2]", "perrin");
+
+		WithArrays target = read(WithArrays.class, source);
+
+		assertThat(target.arrayOfSimpleTypes, IsEqual.equalTo(new String[] { "rand", "mat", "perrin" }));
+	}
+
+	/**
+	 * @see DATAREDIS-492
+	 */
+	@Test
+	public void writeHandlesArraysOfComplexTypeProperly() {
+
+		WithArrays source = new WithArrays();
+
+		Species trolloc = new Species();
+		trolloc.name = "trolloc";
+
+		Species myrddraal = new Species();
+		myrddraal.name = "myrddraal";
+		myrddraal.alsoKnownAs = Arrays.asList("halfmen", "fades", "neverborn");
+
+		source.arrayOfCompexTypes = new Species[] { trolloc, myrddraal };
+
+		assertThat(write(source).getBucket(),
+				isBucket().containingUtf8String("arrayOfCompexTypes.[0].name", "trolloc") //
+						.containingUtf8String("arrayOfCompexTypes.[1].name", "myrddraal") //
+						.containingUtf8String("arrayOfCompexTypes.[1].alsoKnownAs.[0]", "halfmen") //
+						.containingUtf8String("arrayOfCompexTypes.[1].alsoKnownAs.[1]", "fades") //
+						.containingUtf8String("arrayOfCompexTypes.[1].alsoKnownAs.[2]", "neverborn"));
+	}
+
+	/**
+	 * @see DATAREDIS-492
+	 */
+	@Test
+	public void readHandlesArraysOfComplexTypeProperly() {
+
+		Map<String, String> source = new LinkedHashMap<String, String>();
+		source.put("arrayOfCompexTypes.[0].name", "trolloc");
+		source.put("arrayOfCompexTypes.[1].name", "myrddraal");
+		source.put("arrayOfCompexTypes.[1].alsoKnownAs.[0]", "halfmen");
+		source.put("arrayOfCompexTypes.[1].alsoKnownAs.[1]", "fades");
+		source.put("arrayOfCompexTypes.[1].alsoKnownAs.[2]", "neverborn");
+
+		WithArrays target = read(WithArrays.class, source);
+
+		assertThat(target.arrayOfCompexTypes[0], notNullValue());
+		assertThat(target.arrayOfCompexTypes[0].name, is("trolloc"));
+		assertThat(target.arrayOfCompexTypes[1], notNullValue());
+		assertThat(target.arrayOfCompexTypes[1].name, is("myrddraal"));
+		assertThat(target.arrayOfCompexTypes[1].alsoKnownAs, contains("halfmen", "fades", "neverborn"));
+	}
+
+	/**
+	 * @see DATAREDIS-489
+	 */
+	@Test
+	public void writeHandlesArraysOfObjectTypeProperly() {
+
+		Species trolloc = new Species();
+		trolloc.name = "trolloc";
+
+		WithArrays source = new WithArrays();
+		source.arrayOfObject = new Object[] { "rand", trolloc, 100L };
+
+		assertThat(write(source).getBucket(),
+				isBucket().containingUtf8String("arrayOfObject.[0]", "rand") //
+						.containingUtf8String("arrayOfObject.[0]._class", "java.lang.String")
+						.containingUtf8String("arrayOfObject.[1]._class", Species.class.getName()) //
+						.containingUtf8String("arrayOfObject.[1].name", "trolloc") //
+						.containingUtf8String("arrayOfObject.[2]._class", "java.lang.Long") //
+						.containingUtf8String("arrayOfObject.[2]", "100"));
+	}
+
+	/**
+	 * @see DATAREDIS-489
+	 */
+	@Test
+	public void readHandlesArraysOfObjectTypeProperly() {
+
+		Map<String, String> source = new LinkedHashMap<String, String>();
+		source.put("arrayOfObject.[0]", "rand");
+		source.put("arrayOfObject.[0]._class", "java.lang.String");
+		source.put("arrayOfObject.[1]._class", Species.class.getName());
+		source.put("arrayOfObject.[1].name", "trolloc");
+		source.put("arrayOfObject.[2]._class", "java.lang.Long");
+		source.put("arrayOfObject.[2]", "100");
+
+		WithArrays target = read(WithArrays.class, source);
+
+		assertThat(target.arrayOfObject[0], notNullValue());
+		assertThat(target.arrayOfObject[0], instanceOf(String.class));
+		assertThat(target.arrayOfObject[1], notNullValue());
+		assertThat(target.arrayOfObject[1], instanceOf(Species.class));
+		assertThat(target.arrayOfObject[2], notNullValue());
+		assertThat(target.arrayOfObject[2], instanceOf(Long.class));
+	}
+
+	/**
+	 * @see DATAREDIS-489
+	 */
+	@Test
+	public void writeShouldAppendTyeHintToObjectPropertyValueTypesCorrectly() {
+
+		TypeWithObjectValueTypes sample = new TypeWithObjectValueTypes();
+		sample.object = "bar";
+
+		Bucket bucket = write(sample).getBucket();
+
+		assertThat(bucket,
+				isBucket().containingUtf8String("object", "bar").containingUtf8String("object._class", "java.lang.String"));
+	}
+
+	/**
+	 * @see DATAREDIS-489
+	 */
+	@Test
+	public void shouldWriteReadObjectPropertyValueTypeCorrectly() {
+
+		TypeWithObjectValueTypes di = new TypeWithObjectValueTypes();
+		di.object = "foo";
+
+		RedisData rd = write(di);
+
+		TypeWithObjectValueTypes result = converter.read(TypeWithObjectValueTypes.class, rd);
+		assertThat(result.object, instanceOf(String.class));
+	}
+
+	/**
+	 * @see DATAREDIS-489
+	 */
+	@Test
+	public void writeShouldAppendTyeHintToObjectMapValueTypesCorrectly() {
+
+		TypeWithObjectValueTypes sample = new TypeWithObjectValueTypes();
+		sample.map.put("string", "bar");
+		sample.map.put("long", new Long(1L));
+		sample.map.put("date", new Date());
+
+		Bucket bucket = write(sample).getBucket();
+
+		assertThat(bucket, isBucket().containingUtf8String("map.[string]", "bar")
+				.containingUtf8String("map.[string]._class", "java.lang.String"));
+		assertThat(bucket,
+				isBucket().containingUtf8String("map.[long]", "1").containingUtf8String("map.[long]._class", "java.lang.Long"));
+		assertThat(bucket, isBucket().containingUtf8String("map.[date]._class", "java.util.Date"));
+	}
+
+	/**
+	 * @see DATAREDIS-489
+	 */
+	@Test
+	public void shouldWriteReadObjectMapValueTypeCorrectly() {
+
+		TypeWithObjectValueTypes sample = new TypeWithObjectValueTypes();
+		sample.map.put("string", "bar");
+		sample.map.put("long", new Long(1L));
+		sample.map.put("date", new Date());
+
+		RedisData rd = write(sample);
+
+		TypeWithObjectValueTypes result = converter.read(TypeWithObjectValueTypes.class, rd);
+		assertThat(result.map.get("string"), instanceOf(String.class));
+		assertThat(result.map.get("long"), instanceOf(Long.class));
+		assertThat(result.map.get("date"), instanceOf(Date.class));
+	}
+
+	/**
+	 * @see DATAREDIS-489
+	 */
+	@Test
+	public void writeShouldAppendTyeHintToObjectListValueTypesCorrectly() {
+
+		TypeWithObjectValueTypes sample = new TypeWithObjectValueTypes();
+		sample.list.add("string");
+		sample.list.add(new Long(1L));
+		sample.list.add(new Date());
+
+		Bucket bucket = write(sample).getBucket();
+
+		assertThat(bucket, isBucket().containingUtf8String("list.[0]", "string").containingUtf8String("list.[0]._class",
+				"java.lang.String"));
+		assertThat(bucket,
+				isBucket().containingUtf8String("list.[1]", "1").containingUtf8String("list.[1]._class", "java.lang.Long"));
+		assertThat(bucket, isBucket().containingUtf8String("list.[2]._class", "java.util.Date"));
+	}
+
+	/**
+	 * @see DATAREDIS-489
+	 */
+	@Test
+	public void shouldWriteReadObjectListValueTypeCorrectly() {
+
+		TypeWithObjectValueTypes sample = new TypeWithObjectValueTypes();
+		sample.list.add("string");
+		sample.list.add(new Long(1L));
+		sample.list.add(new Date());
+
+		RedisData rd = write(sample);
+
+		TypeWithObjectValueTypes result = converter.read(TypeWithObjectValueTypes.class, rd);
+		assertThat(result.list.get(0), instanceOf(String.class));
+		assertThat(result.list.get(1), instanceOf(Long.class));
+		assertThat(result.list.get(2), instanceOf(Date.class));
+	}
+
+	/**
+	 * @see DATAREDIS-509
+	 */
+	@Test
+	public void writeHandlesArraysOfPrimitivesProperly() {
+
+		Map<String, String> source = new LinkedHashMap<String, String>();
+		source.put("arrayOfPrimitives.[0]", "1");
+		source.put("arrayOfPrimitives.[1]", "2");
+		source.put("arrayOfPrimitives.[2]", "3");
+
+		WithArrays target = read(WithArrays.class, source);
+
+		assertThat(target.arrayOfPrimitives[0], is(1));
+		assertThat(target.arrayOfPrimitives[1], is(2));
+		assertThat(target.arrayOfPrimitives[2], is(3));
+	}
+
+	/**
+	 * @see DATAREDIS-509
+	 */
+	@Test
+	public void readHandlesArraysOfPrimitivesProperly() {
+
+		WithArrays source = new WithArrays();
+		source.arrayOfPrimitives = new int[] { 1, 2, 3 };
+		assertThat(write(source).getBucket(), isBucket().containingUtf8String("arrayOfPrimitives.[0]", "1")
+				.containingUtf8String("arrayOfPrimitives.[1]", "2").containingUtf8String("arrayOfPrimitives.[2]", "3"));
+	}
+
 	private RedisData write(Object source) {
 
 		RedisData rdo = new RedisData();
 		converter.write(source, rdo);
 		return rdo;
+	}
+
+	private <T> T read(Class<T> type, Map<String, String> source) {
+		return converter.read(type, new RedisData(Bucket.newBucketFromStringMap(source)));
 	}
 
 	@WritingConverter
@@ -1372,6 +1662,34 @@ public class MappingRedisConverterUnitTests {
 			map.put("species-nicknames",
 					StringUtils.collectionToCommaDelimitedString(source.alsoKnownAs).getBytes(Charset.forName("UTF-8")));
 			return map;
+		}
+	}
+
+	@WritingConverter
+	static class ListToByteConverter implements Converter<List, byte[]> {
+
+		private final ObjectMapper mapper;
+		private final Jackson2JsonRedisSerializer<List> serializer;
+
+		ListToByteConverter() {
+
+			mapper = new ObjectMapper();
+			mapper.setVisibility(mapper.getSerializationConfig().getDefaultVisibilityChecker()
+					.withFieldVisibility(Visibility.ANY).withGetterVisibility(Visibility.NONE)
+					.withSetterVisibility(Visibility.NONE).withCreatorVisibility(Visibility.NONE));
+
+			serializer = new Jackson2JsonRedisSerializer<List>(List.class);
+			serializer.setObjectMapper(mapper);
+		}
+
+		@Override
+		public byte[] convert(List source) {
+
+			if (source == null || source.isEmpty()) {
+				return null;
+			}
+
+			return serializer.serialize(source);
 		}
 	}
 

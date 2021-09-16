@@ -1,5 +1,5 @@
 /*
- * Copyright 2015 the original author or authors.
+ * Copyright 2015-2016 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,7 +23,9 @@ import java.time.LocalTime;
 import java.time.Period;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
+import java.util.ArrayList;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
@@ -160,4 +162,17 @@ public class ConversionTestEntities {
 		int length;
 	}
 
+	public static class WithArrays {
+
+		Object[] arrayOfObject;
+		String[] arrayOfSimpleTypes;
+		Species[] arrayOfCompexTypes;
+		int[] arrayOfPrimitives;
+	}
+
+	static class TypeWithObjectValueTypes {
+		Object object;
+		Map<String, Object> map = new HashMap<String, Object>();
+		List<Object> list = new ArrayList<Object>();
+	}
 }
